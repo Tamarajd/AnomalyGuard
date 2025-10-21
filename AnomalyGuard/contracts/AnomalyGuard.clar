@@ -230,4 +230,102 @@
     )
 )
 
+;; Core function: Analyze and record transaction with AI-powered anomaly detection
+;; This function performs comprehensive analysis of incoming transactions by:
+;; 1. Checking if the account is frozen
+;; 2. Calculating velocity-based anomalies (transactions per time window)
+;; 3. Detecting amount-based anomalies (deviation from historical average)
+;; 4. Computing frequency anomalies (unusual transaction patterns)
+;; 5. Generating an overall risk score using weighted factors
+;; 6. Recording anomalies that exceed thresholds
+;; 7. Updating account statistics for future analysis
+(define-public (analyze-transaction (account principal) (amount uint))
+    (begin
+        (asserts! (> amount u0) err-invalid-amount)
+        
+        (let
+            (
+                ;; Retrieve or initialize account statistics
+                (stats (unwrap! (get-account-stats account) err-invalid-parameters))
+                (is-frozen (get is-frozen stats))
+                (avg-amount (get average-amount stats))
+                (last-block (get last-transaction-block stats))
+                (txs-in-window (get transactions-in-window stats))
+                
+                ;; Calculate time-based metrics
+                (blocks-since-last (if (> last-block u0) 
+                    (- block-height last-block) 
+                    u999))
+                (is-in-window (< blocks-since-last (var-get detection-window)))
+                (current-velocity (if is-in-window (+ txs-in-window u1) u1))
+                
+                ;; Calculate anomaly scores (0-100 scale)
+                (velocity-anomaly (if (> current-velocity (var-get velocity-threshold))
+                    (min u100 (* (- current-velocity (var-get velocity-threshold)) u20))
+                    u0))
+                
+                (amount-deviation (calculate-deviation amount avg-amount))
+                (amount-anomaly (if (> amount-deviation (var-get amount-deviation-threshold))
+                    (min u100 (/ amount-deviation u3))
+                    u0))
+                
+                (frequency-anomaly (if (and is-in-window (< blocks-since-last u2))
+                    u80
+                    u0))
+                
+                ;; Calculate overall risk score
+                (risk-score (calculate-risk-score 
+                    velocity-anomaly 
+                    amount-anomaly 
+                    frequency-anomaly))
+                
+                ;; Determine if this is an anomaly
+                (is-anomaly (>= risk-score (var-get risk-score-threshold)))
+                (severity (get-severity-level risk-score))
+                (tx-id (var-get transaction-counter))
+            )
+            
+            ;; Check if account is frozen
+            (asserts! (not is-frozen) err-account-frozen)
+            
+            ;; Record anomaly if detected
+            (if is-anomaly
+                (begin
+                    (map-set anomaly-records
+                        {account: account, transaction-id: tx-id}
+                        {
+                            amount: amount,
+                            block-height: block-height,
+                            severity: severity,
+                            reason: "AI-detected: Multi-factor risk threshold exceeded",
+                            resolved: false
+                        }
+                    )
+                    (var-set total-anomalies-detected 
+                        (+ (var-get total-anomalies-detected) u1))
+                )
+                true
+            )
+            
+            ;; Update account statistics
+            (update-account-stats account amount risk-score)
+            (var-set transaction-counter (+ tx-id u1))
+            
+            ;; Return analysis results
+            (ok {
+                transaction-id: tx-id,
+                risk-score: risk-score,
+                is-anomaly: is-anomaly,
+                severity: severity,
+                details: {
+                    velocity-score: velocity-anomaly,
+                    amount-score: amount-anomaly,
+                    frequency-score: frequency-anomaly
+                }
+            })
+        )
+    )
+)
+
+
 
